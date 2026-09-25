@@ -4,68 +4,28 @@ import { IDEATION_SYSTEM_PROMPT } from '../prompts/ideation.js';
 import { SUMMARIZE_SYSTEM_PROMPT } from '../prompts/summarize.js';
 import { AGENT_SYSTEM_PROMPT } from '../prompts/agent.js';
 import { requireAuth } from '../middleware/requireAuth.js';
+import { createThinkTagParser } from '../utils/thinkTagParser.js';
 
 const router = Router();
 router.use(requireAuth);
 
-// DeepSeek R1 and similar models wrap chain-of-thought in  标签
+/**
+ * 非流式响应的收尾清理：模型偶尔会把思考内容整段带出来，
+ * 这里做一次兜底剥离（流式路径由 thinkTagParser 逐块处理，不经过这里）。
+ *
+ * 标签用字符码拼出来而不是直接写字面量，原因见 utils/thinkTagParser.ts 顶部注释。
+ */
+const LT_CHAR = String.fromCharCode(60);
+const GT_CHAR = String.fromCharCode(62);
+const THINK_BLOCK_RE = new RegExp(
+  LT_CHAR + '(?:think|thinking)' + GT_CHAR + '[\\s\\S]*?' + LT_CHAR + '/(?:think|thinking)' + GT_CHAR,
+  'gi',
+);
+
 function stripThinkTags(text: string): string {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-    .replace(/<\?xml[\s\S]*?\?>/gi, '')
-    .trim();
+  return text.replace(THINK_BLOCK_RE, '').trim();
 }
 
-type ThinkEvent = { type: 'text'; content: string } | { type: 'thinking'; content: string };
-
-// Streaming think-tag processor — separates think content from normal text
-function createThinkProcessor() {
-  let buffer = '';
-  let inThink = false;
-
-  return function process(chunk: string): ThinkEvent[] {
-    buffer += chunk;
-    const events: ThinkEvent[] = [];
-
-    while (buffer.length > 0) {
-      if (inThink) {
-        const endMatch = buffer.match(/<\/(think|thinking)>/i);
-        if (!endMatch) return events; // still inside, keep buffering
-        const thinkContent = buffer.slice(0, endMatch.index!);
-        if (thinkContent) events.push({ type: 'thinking', content: thinkContent });
-        buffer = buffer.slice(endMatch.index! + endMatch[0].length);
-        inThink = false;
-      } else {
-        const startMatch = buffer.match(/<(think|thinking)>/i);
-        if (!startMatch) {
-          // Keep a partial "<think" / "<thinking" at the end to avoid splitting tags across chunks
-          const lastLt = buffer.lastIndexOf('<');
-          if (lastLt !== -1) {
-            const suffix = buffer.slice(lastLt);
-            if (/^<(?:t(?:h(?:i(?:n(?:k(?:i(?:n(?:g)?)?)?)?)?)?)?)?$/i.test(suffix)) {
-              if (lastLt > 0) events.push({ type: 'text', content: buffer.slice(0, lastLt) });
-              buffer = suffix;
-            } else {
-              if (buffer) events.push({ type: 'text', content: buffer });
-              buffer = '';
-            }
-          } else {
-            if (buffer) events.push({ type: 'text', content: buffer });
-            buffer = '';
-          }
-        } else {
-          if (startMatch.index! > 0) {
-            events.push({ type: 'text', content: buffer.slice(0, startMatch.index!) });
-          }
-          buffer = buffer.slice(startMatch.index! + startMatch[0].length);
-          inThink = true;
-        }
-      }
-    }
-    return events;
-  };
-}
 
 // POST /api/ai/test — test API connectivity and list available models
 router.post('/test', async (req: Request, res: Response) => {
@@ -120,7 +80,7 @@ router.post('/chat', async (req: Request, res: Response) => {
       let fullRawContent = '';
       let fullCleanContent = '';
       let thinkingCount = 0;
-      const thinkProcessor = createThinkProcessor();
+      const thinkProcessor = createThinkTagParser();
       try {
         const stream = streamChatWithAI({
           messages,
@@ -133,7 +93,7 @@ router.post('/chat', async (req: Request, res: Response) => {
 
         for await (const chunk of stream) {
           fullRawContent += chunk;
-          const events = thinkProcessor(chunk);
+          const events = thinkProcessor.process(chunk);
           for (const ev of events) {
             if (ev.type === 'thinking') {
               thinkingCount++;
@@ -143,6 +103,17 @@ router.post('/chat', async (req: Request, res: Response) => {
               fullCleanContent += ev.content;
               res.write(`data: ${JSON.stringify({ chunk: ev.content })}\n\n`);
             }
+          }
+        }
+
+        // 流结束：吐出解析器缓冲区里剩余的内容，避免末尾文本被丢弃
+        for (const ev of thinkProcessor.flush()) {
+          if (ev.type === 'thinking') {
+            thinkingCount++;
+            res.write(`data: ${JSON.stringify({ thinking: ev.content })}\n\n`);
+          } else {
+            fullCleanContent += ev.content;
+            res.write(`data: ${JSON.stringify({ chunk: ev.content })}\n\n`);
           }
         }
 
