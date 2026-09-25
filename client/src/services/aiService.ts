@@ -104,23 +104,47 @@ export async function* streamChatMessage(params: ChatRequest): AsyncGenerator<St
     buffer = lines.pop() || '';
 
     for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const data = JSON.parse(line.slice(6));
-          yield data;
-        } catch {
-          // skip invalid JSON lines
-        }
-      }
+      const event = parseSSELine(line);
+      if (event !== null) yield event;
     }
   }
 
-  // Process remaining buffer
-  if (buffer.startsWith('data: ')) {
-    try {
-      const data = JSON.parse(buffer.slice(6));
-      yield data;
-    } catch { /* skip */ }
+  // 收尾：流结束时缓冲区里可能还剩最后一行（服务端没以换行结尾的情况）
+  if (buffer.length > 0) {
+    const event = parseSSELine(buffer);
+    if (event !== null) yield event;
+  }
+}
+
+/**
+ * 解析一行 SSE 数据。
+ *
+ * 为什么单独抽出来：
+ *  1. SSE 规范允许行尾是 \r\n（很多反向代理会改写行尾）。旧实现只按 \n 切分，
+ *     行尾会残留 \r，之所以还能跑通纯粹是因为 JSON.parse 容忍尾部空白——
+ *     属于"依赖巧合的正确"，换个解析器就会出问题。
+ *  2. 规范里 `data:` 后面不强制要求空格（`data:{...}` 同样合法），
+ *     旧实现只认 `data: ` 这一种写法。
+ *  3. 需要忽略空行和 `:` 开头的注释行（SSE 心跳常用）。
+ *
+ * @returns 解析出的事件对象；该行不是有效数据时返回 null
+ */
+export function parseSSELine(rawLine: string): StreamEvent | null {
+  // 去掉 \r\n 里的 \r，以及首尾空白
+  const line = rawLine.replace(/\r$/, '').trim();
+  if (line.length === 0) return null; // 空行：事件分隔符
+  if (line.startsWith(':')) return null; // 注释行：SSE 心跳
+
+  if (!line.startsWith('data:')) return null;
+
+  const payload = line.slice(5).trimStart();
+  if (payload.length === 0) return null;
+
+  try {
+    return JSON.parse(payload) as StreamEvent;
+  } catch {
+    // 单行 JSON 不完整（理论上不会发生，因为服务端按行写完整 JSON）
+    return null;
   }
 }
 
