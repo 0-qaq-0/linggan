@@ -98,14 +98,21 @@ npm install
 
 ### 2. 配置环境变量
 
-在仓库根目录创建 `.env`（服务端启动时自动读取 `../../.env`，即仓库根目录）：
+把仓库根目录的示例文件复制为 `.env`（服务端启动时自动读取根目录 `.env`）：
+
+```bash
+cp .env.example .env     # Windows: copy .env.example .env
+```
+
+然后至少填写 `JWT_SECRET`：
 
 ```bash
 # 服务端端口（默认 3001）
 PORT=3001
 
-# JWT 密钥与有效期（强烈建议生产环境修改）
-JWT_SECRET=your-secret
+# JWT 签名密钥（必填，启动时会校验）
+# 生成方式：openssl rand -hex 32
+JWT_SECRET=<32 字节随机字符串>
 JWT_EXPIRES_IN=7d
 
 # 首次启动时自动创建的管理员账号（可选，非生产环境跳过）
@@ -113,6 +120,8 @@ ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=strong-password-here
 ```
 
+> ⚠️ `JWT_SECRET` 是登录令牌的签名密钥。**服务端启动时会校验**：缺失、仍为历史默认值、或长度不足 16 字符时会直接退出并说明原因——宁可起不来，也不要带着一个公开的密钥对外提供登录服务。
+>
 > AI 的 Provider / API Key / Model 不需要写在这里，登录后在网页「设置」面板中配置即可（会保存到你的工作区里）。
 
 ### 3. 启动开发环境
@@ -188,10 +197,25 @@ cd server && NODE_ENV=production node dist/index.js
 |------|--------|------|
 | `PORT` | `3001` | 服务端端口 |
 | `NODE_ENV` | — | `production` 时托管 `client/dist` |
-| `JWT_SECRET` | `linggan-dev-secret-change-me` | JWT 签名密钥，生产环境务必修改 |
+| `JWT_SECRET` | **无默认值（必填）** | JWT 签名密钥，至少 16 字符；缺失或过短时服务端启动即退出 |
 | `JWT_EXPIRES_IN` | `7d` | Token 有效期 |
 | `ADMIN_EMAIL` | — | 启动时自动创建的管理员邮箱 |
 | `ADMIN_PASSWORD` | — | 管理员密码 |
+
+---
+
+## 🧪 测试
+
+服务端的流式解析逻辑带有边界测试（覆盖标签被切碎在分片边界、半截标签、未闭合标签等情况）：
+
+```bash
+cd server
+npm test          # 运行测试
+npm run typecheck # 只做类型检查
+```
+
+> 这些测试是为了防止一类很难手工复现的 bug：流式接口的 chunk 切分位置不可控，
+> 标签可能被切在两个分片之间，只有把边界情况固化成测试才能稳定回归。
 
 ---
 

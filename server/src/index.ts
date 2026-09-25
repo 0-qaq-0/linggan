@@ -8,10 +8,13 @@ import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
 import workspaceRoutes from './routes/workspace.js';
 import { ensureBootstrapAdmin } from './services/userStore.js';
+import { loadAuthSecret } from './config/authSecret.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// 注意：必须在所有业务模块 import 之后、且在任何密钥读取之前执行。
+// 所以密钥校验放在下面的 start() 里，而不是模块顶层。
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
 const app = express();
@@ -45,6 +48,15 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 async function start() {
+  // 启动即校验鉴权密钥：配置缺失/仍是默认值/过短时直接退出，
+  // 避免服务带着一个公开的密钥对外提供登录服务。
+  try {
+    loadAuthSecret();
+  } catch (err: any) {
+    console.error('\n' + (err?.message || err) + '\n');
+    process.exit(1);
+  }
+
   const adminEmail = process.env.ADMIN_EMAIL;
   const adminPassword = process.env.ADMIN_PASSWORD;
   if (adminEmail && adminPassword) {

@@ -21,10 +21,26 @@
 
 ```
 NODE_ENV=production
-JWT_SECRET=<随机长字符串>
+JWT_SECRET=<32 字节随机字符串，必填>
 ADMIN_EMAIL=<管理员邮箱>
 ADMIN_PASSWORD=<强密码>
 ```
+
+> ⚠️ **`JWT_SECRET` 是必填项。** 它是登录令牌的签名密钥，泄露等于任何人都能伪造任意用户（含管理员）的登录状态。
+>
+> 服务端启动时会校验，出现以下任一情况会**直接退出并打印原因**，不会带着不安全配置继续服务：
+> - 未配置 `JWT_SECRET`
+> - 仍使用历史默认值 `linggan-dev-secret-change-me`
+> - 长度不足 16 字符
+>
+> 生成方式：
+> ```bash
+> openssl rand -hex 32
+> # 或
+> node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+> ```
+>
+> 更换密钥后，此前签发的所有登录令牌都会失效，用户需要重新登录（这是预期行为）。
 
 ## 构建与启动
 
